@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telipropmt</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<main id="editor" class="screen">
+  <header class="top">
+    <h1>Telipropmt</h1>
+    <button id="themeBtn" class="ghost" title="Toggle theme (T)">◐ Theme</button>
+  </header>
+
+  <div class="editor-grid">
+    <section class="panel">
+      <input id="scriptTitle" type="text" placeholder="Script title" maxlength="80">
+      <textarea id="scriptText" placeholder="Paste or type your script here…"></textarea>
+      <div class="row">
+        <button id="saveBtn" class="ghost">Save script</button>
+        <span id="wordCount" class="muted">0 words · ~0:00</span>
+        <button id="startBtn" class="primary">Start ▶</button>
+      </div>
+    </section>
+
+    <aside class="panel side">
+      <h2>Settings</h2>
+      <label>Speed <output id="wpmOut"></output> WPM
+        <input id="wpm" type="range" min="40" max="260" step="5">
+      </label>
+      <label>Font size <output id="sizeOut"></output> px
+        <input id="size" type="range" min="28" max="140" step="2">
+      </label>
+      <label>Countdown
+        <select id="countdown">
+          <option value="0">Off</option>
+          <option value="3">3 seconds</option>
+          <option value="5">5 seconds</option>
+        </select>
+      </label>
+      <label class="check"><input id="mirror" type="checkbox"> Mirror text</label>
+
+      <h2>Saved scripts</h2>
+      <ul id="saved" class="saved"></ul>
+      <p class="muted small">Keys while prompting: Space play/pause · ↑↓ speed · ←→ line · +/− size · M mirror · T theme · Esc back</p>
+    </aside>
+  </div>
+</main>
+
+<main id="prompter" class="screen hidden">
+  <div id="viewport">
+    <div id="band"></div>
+    <div id="text"></div>
+  </div>
+  <div id="countdownOverlay" class="hidden"></div>
+  <div id="bar" class="bar">
+    <button id="backBtn" class="ghost">← Edit</button>
+    <button id="playBtn" class="primary">Pause</button>
+    <button id="slower" class="ghost">−</button>
+    <span id="barWpm">150 WPM</span>
+    <button id="faster" class="ghost">+</button>
+    <button id="smaller" class="ghost">A−</button>
+    <button id="larger" class="ghost">A+</button>
+    <button id="mirrorBtn" class="ghost">Mirror</button>
+    <button id="barTheme" class="ghost">◐</button>
+    <div id="progress"><i></i></div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
