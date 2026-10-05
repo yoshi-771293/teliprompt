@@ -10,6 +10,7 @@
     size: store.get('tp.size', 72),
     mirror: store.get('tp.mirror', false),
     countdown: store.get('tp.countdown', 3),
+    words: store.get('tp.words', true),
     theme: store.get('tp.theme', null), // null = system
     title: store.get('tp.title', ''),
     text: store.get('tp.text', ''),
@@ -38,6 +39,7 @@
     $('size').value = s.size;
     $('countdown').value = String(s.countdown);
     $('mirror').checked = s.mirror;
+    $('words').checked = s.words;
     const w = countWords($('scriptText').value);
     $('wordCount').textContent = `${w} words · ~${fmtTime(w / s.wpm * 60)}`;
   };
@@ -69,6 +71,7 @@
   $('size').addEventListener('input', (e) => setSetting('size', +e.target.value));
   $('countdown').addEventListener('change', (e) => setSetting('countdown', +e.target.value));
   $('mirror').addEventListener('change', (e) => setSetting('mirror', e.target.checked));
+  $('words').addEventListener('change', (e) => setSetting('words', e.target.checked));
   $('themeBtn').onclick = toggleTheme;
   $('saveBtn').onclick = () => {
     const text = $('scriptText').value.trim();
@@ -83,32 +86,33 @@
   };
 
   // --- prompter
-  let pos = 0;            // scroll offset in px
+  // Source of truth is `w`, a fractional word index. Scroll offset and the
+  // highlighted word/row are both derived from it, so the word highlight
+  // advances at exactly the chosen WPM.
+  let w = 0;
+  let pos = 0;            // displayed scroll offset, eases toward the active row's center
+  let total = 0;
   let playing = false;
   let last = 0;
   let raf = 0;
   let countTimer = 0;
   let hideTimer = 0;
-  let pxPerWord = 60;
 
   const textEl = $('text');
   const viewport = $('viewport');
+
+  let rows = [];          // visual rows: { top, bottom, center, spans, start, a }
+  let words = [];         // every word span in reading order
+  let activeRow = -1;
+  let curIdx = -1;
 
   const applyLayout = () => {
     textEl.style.fontSize = s.size + 'px';
     $('band').style.setProperty('--band-h', Math.round(s.size * 1.35 + 30) + 'px');
     viewport.classList.toggle('mirror', s.mirror);
-    measure();
+    viewport.classList.toggle('words', s.words);
+    if (inPrompter()) groupRows();
   };
-  const measure = () => {
-    // average vertical pixels consumed per word → converts WPM to px/sec
-    const words = Math.max(1, countWords(textEl.textContent));
-    const total = textEl.scrollHeight;
-    pxPerWord = total / words;
-    groupRows();
-  };
-  let rows = [];          // visual rows: { center, spans }
-  let activeRow = -1;
   const buildText = () => {
     textEl.innerHTML = '';
     const raw = $('scriptText').value.replace(/\r/g, '');
@@ -116,10 +120,10 @@
       const d = document.createElement('div');
       if (!l.trim()) { d.className = 'gap'; textEl.append(d); return; }
       d.className = 'para';
-      l.trim().split(/\s+/).forEach((w, i, arr) => {
+      l.trim().split(/\s+/).forEach((word, i, arr) => {
         const sp = document.createElement('span');
         sp.className = 'w';
-        sp.textContent = w;
+        sp.textContent = word;
         d.append(sp);
         if (i < arr.length - 1) d.append(' ');
       });
@@ -136,53 +140,77 @@
       if (!r) { r = { top, bottom: top + sp.offsetHeight, spans: [] }; map.set(top, r); rows.push(r); }
       r.spans.push(sp);
     });
-    rows.forEach((r) => { r.center = (r.top + r.bottom) / 2; });
-    activeRow = -1;
-  };
-  const maxPos = () => Math.max(0, textEl.scrollHeight - 1);
-  const render = () => {
-    const mid = viewport.clientHeight / 2;
-    textEl.style.transform = `translateY(${mid - pos}px)`;
-    let best = 0, bd = Infinity;
+    words = [];
+    let idx = 0;
     rows.forEach((r, i) => {
-      const d = Math.abs(r.center - pos);
-      if (d < bd) { bd = d; best = i; }
+      r.center = (r.top + r.bottom) / 2;
+      r.start = idx;
+      r.a = idx + r.spans.length / 2;   // word position at which this row is centered
+      idx += r.spans.length;
+      r.spans.forEach((sp) => { sp._row = i; words.push(sp); });
     });
-    if (best !== activeRow) {
-      rows.forEach((r, i) => {
-        const dist = Math.abs(i - best);
-        const cls = dist === 0 ? 'active' : dist === 1 ? 'near' : '';
-        r.spans.forEach((sp) => { sp.className = cls ? 'w ' + cls : 'w'; });
-      });
-      activeRow = best;
-    }
-    $('progress').firstElementChild.style.width = (maxPos() ? Math.min(100, pos / maxPos() * 100) : 0) + '%';
+    total = idx;
+    activeRow = -1;
+    curIdx = -1;
   };
-  const tick = (t) => {
-    if (!playing) return;
+  const paint = () => { textEl.style.transform = `translateY(${viewport.clientHeight / 2 - pos}px)`; };
+  // Updates row/word classes from `w`; returns the scroll offset that centers the active row.
+  const update = () => {
+    if (!rows.length) return 0;
+    const ci = Math.min(total - 1, Math.max(0, Math.floor(w)));
+    const row = words[ci]._row;
+    if (row !== activeRow) {
+      rows.forEach((r, i) => {
+        const dist = Math.abs(i - row);
+        const cls = dist === 0 ? 'w active' : dist === 1 ? 'w near' : 'w';
+        r.spans.forEach((sp) => { sp.className = cls; });
+      });
+      activeRow = row;
+      curIdx = -1;
+    }
+    if (ci !== curIdx) {
+      if (curIdx >= 0 && words[curIdx]._row === row) words[curIdx].classList.remove('cur');
+      words[ci].classList.add('cur');
+      curIdx = ci;
+    }
+    $('progress').firstElementChild.style.width = (total ? Math.min(100, w / total * 100) : 0) + '%';
+    return rows[row].center;
+  };
+  const render = (snap) => {
+    const target = update();
+    if (snap) pos = target;
+    paint();
+  };
+  const ended = () => total > 0 && w >= total;
+  const frame = (t) => {
     const dt = Math.min(0.1, (t - last) / 1000);
     last = t;
-    pos += (s.wpm / 60) * pxPerWord * dt;
-    if (pos >= maxPos()) { pos = maxPos(); render(); setPlaying(false); return; }
-    render();
-    raf = requestAnimationFrame(tick);
+    if (playing) {
+      w += (s.wpm / 60) * dt;
+      if (w >= total) { w = total; setPlaying(false); }
+    }
+    const target = update();
+    const d = target - pos;
+    pos = Math.abs(d) < 0.3 ? target : pos + d * (1 - Math.exp(-dt * 12));
+    paint();
+    raf = requestAnimationFrame(frame);
   };
+  const startLoop = () => { cancelAnimationFrame(raf); last = performance.now(); raf = requestAnimationFrame(frame); };
+  const stopLoop = () => cancelAnimationFrame(raf);
   const setPlaying = (p) => {
     playing = p;
-    $('playBtn').textContent = p ? 'Pause' : (pos >= maxPos() && pos > 0 ? 'Restart' : 'Play');
-    cancelAnimationFrame(raf);
-    if (p) { last = performance.now(); raf = requestAnimationFrame(tick); }
+    $('playBtn').textContent = p ? 'Pause' : (ended() ? 'Restart' : 'Play');
     wakeBar();
   };
   const togglePlay = () => {
     if (countTimer) { cancelCountdown(); return; }
-    if (!playing && pos >= maxPos() && pos > 0) { pos = firstLinePos(); render(); }
+    if (!playing && ended()) { w = 0; }
     setPlaying(!playing);
   };
-  const firstLinePos = () => (rows[0] ? rows[0].center : 0);
   const nudgeLine = (dir) => {
-    const next = rows[Math.min(rows.length - 1, Math.max(0, (activeRow < 0 ? 0 : activeRow) + dir))];
-    if (next) { pos = next.center; render(); }
+    const cur = activeRow < 0 ? 0 : activeRow;
+    const target = rows[Math.min(rows.length - 1, Math.max(0, cur + dir))];
+    if (target) w = target.start;
     wakeBar();
   };
   const syncBar = () => { $('barWpm').textContent = s.wpm + ' WPM'; };
@@ -213,14 +241,16 @@
     $('prompter').classList.remove('hidden');
     buildText();
     syncBar();
-    pos = firstLinePos();
-    render();
+    w = 0;
+    render(true);
+    startLoop();
     if (s.countdown > 0) runCountdown(s.countdown, () => setPlaying(true));
     else setPlaying(true);
   };
   const closePrompter = () => {
     cancelCountdown();
     setPlaying(false);
+    stopLoop();
     $('prompter').classList.add('hidden');
     $('editor').classList.remove('hidden');
     syncEditor();
@@ -232,19 +262,26 @@
   $('playBtn').onclick = togglePlay;
   $('slower').onclick = () => setSetting('wpm', Math.max(40, s.wpm - 10));
   $('faster').onclick = () => setSetting('wpm', Math.min(260, s.wpm + 10));
-  $('smaller').onclick = () => { setSetting('size', Math.max(28, s.size - 6)); render(); };
-  $('larger').onclick = () => { setSetting('size', Math.min(140, s.size + 6)); render(); };
+  $('smaller').onclick = () => { setSetting('size', Math.max(28, s.size - 6)); render(true); };
+  $('larger').onclick = () => { setSetting('size', Math.min(140, s.size + 6)); render(true); };
   $('mirrorBtn').onclick = () => setSetting('mirror', !s.mirror);
+  $('wordsBtn').onclick = () => setSetting('words', !s.words);
   $('barTheme').onclick = toggleTheme;
 
   viewport.addEventListener('wheel', (e) => {
     e.preventDefault();
-    pos = Math.min(maxPos(), Math.max(0, pos + e.deltaY));
-    render(); wakeBar();
+    if (!rows.length) return;
+    // move to the row nearest the scrolled position
+    const p = pos + e.deltaY;
+    let best = 0, bd = Infinity;
+    rows.forEach((r, i) => { const d = Math.abs(r.center - p); if (d < bd) { bd = d; best = i; } });
+    w = rows[best].start;
+    pos = p;
+    wakeBar();
   }, { passive: false });
   viewport.addEventListener('click', togglePlay);
   addEventListener('mousemove', () => inPrompter() && wakeBar());
-  addEventListener('resize', () => { if (inPrompter()) { applyLayout(); render(); } });
+  addEventListener('resize', () => { if (inPrompter()) { applyLayout(); render(true); } });
 
   addEventListener('keydown', (e) => {
     const tag = (e.target.tagName || '').toLowerCase();
@@ -257,9 +294,10 @@
     else if (k === 'ArrowDown') { handled(); setSetting('wpm', Math.max(40, s.wpm - 5)); wakeBar(); }
     else if (k === 'ArrowLeft' || k === 'PageUp') { handled(); nudgeLine(-1); }
     else if (k === 'ArrowRight' || k === 'PageDown') { handled(); nudgeLine(1); }
-    else if (k === '+' || k === '=') { setSetting('size', Math.min(140, s.size + 4)); render(); wakeBar(); }
-    else if (k === '-') { setSetting('size', Math.max(28, s.size - 4)); render(); wakeBar(); }
+    else if (k === '+' || k === '=') { setSetting('size', Math.min(140, s.size + 4)); render(true); wakeBar(); }
+    else if (k === '-') { setSetting('size', Math.max(28, s.size - 4)); render(true); wakeBar(); }
     else if (k === 'm' || k === 'M') { setSetting('mirror', !s.mirror); }
+    else if (k === 'w' || k === 'W') { setSetting('words', !s.words); }
     else if (k === 't' || k === 'T') { toggleTheme(); }
     else if (k === 'Escape') { closePrompter(); }
   });
