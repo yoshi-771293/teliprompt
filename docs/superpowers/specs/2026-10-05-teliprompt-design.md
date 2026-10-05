@@ -1,4 +1,4 @@
-# Telipropmt — Design
+# Teliprompt — Design
 
 Simple teleprompter web app. Static site (HTML/CSS/JS, no build), deployed to Vercel.
 
